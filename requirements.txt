@@ -1,0 +1,5 @@
+# 核心依赖
+python-dotenv==1.0.0
+
+# 通义千问SDK
+dashscope==1.14.2
