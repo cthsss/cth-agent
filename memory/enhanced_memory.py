@@ -226,4 +226,33 @@ class EnhancedMemory:
             "current_context": self.current_context
         }
         return json.dumps(memory_data, ensure_ascii=False, indent=2)
-
+    
+    def auto_save_to_file(self, filepath: str = None) -> bool:
+        """
+        自动保存记忆到JSON文件
+        
+        Args:
+            filepath: 保存路径，如果为None则使用默认路径
+            
+        Returns:
+            bool: 保存是否成功
+        """
+        try:
+            if filepath is None:
+                # 默认保存到项目根目录的backup文件夹
+                import os
+                backup_dir = os.path.join(os.getcwd(), 'backup')
+                os.makedirs(backup_dir, exist_ok=True)
+                filepath = os.path.join(backup_dir, 'memory_backup.json')
+            
+            # 导出并保存
+            json_data = self.export_memory()
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(json_data)
+            
+            print(f"✅ 记忆已保存到: {filepath}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ 保存记忆失败: {e}")
+            return False

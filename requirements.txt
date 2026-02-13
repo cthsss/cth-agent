@@ -3,3 +3,14 @@ python-dotenv==1.0.0
 
 # 通义千问SDK
 dashscope==1.14.2
+
+# LangChain相关依赖
+langchain==0.1.0
+langchain-community==0.0.12
+langchain-openai==0.0.2.post1
+
+# 向量数据库
+faiss-cpu==1.7.4
+
+# OpenAI API
+openai==1.6.1

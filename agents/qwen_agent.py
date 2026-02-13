@@ -12,9 +12,18 @@ from typing import List, Dict, Any
 from datetime import datetime
 from dotenv import load_dotenv
 from memory.enhanced_memory import EnhancedMemory, MessageType
+import json
 
 # 加载环境变量
 load_dotenv()
+
+# 导入图片识别工具
+try:
+    from tools.image_recognition import AliyunImageRecognition
+    IMAGE_RECOGNITION_AVAILABLE = True
+except ImportError:
+    IMAGE_RECOGNITION_AVAILABLE = False
+    print("⚠️  图片识别模块不可用，请检查tools目录")
 
 class QwenEcommerceAgent:
     """通义千问电商客服Agent（增强版）"""
@@ -22,6 +31,23 @@ class QwenEcommerceAgent:
     def __init__(self, agent_name: str = "电商智能客服"):
         self.agent_name = agent_name
         self.memory = EnhancedMemory(max_history=8, summary_threshold=4)  # 增强内存配置
+        
+        # 添加自动保存配置
+        self.auto_save_enabled = True
+        self.save_interval = 3  # 每3次对话保存一次
+        self.dialog_count = 0   # 对话计数器
+        
+        # 添加思维链配置
+        self.use_chain_of_thought = True
+        self.thinking_depth = 3  # 思维深度级别
+        
+        # 初始化图片识别工具
+        self.image_recognizer = None
+        if IMAGE_RECOGNITION_AVAILABLE:
+            self.image_recognizer = AliyunImageRecognition()
+            print("✅ 图片识别功能已启用")
+        else:
+            print("❌ 图片识别功能不可用")
         
         # 初始化通义千问
         try:
@@ -126,8 +152,82 @@ class QwenEcommerceAgent:
         
         return entities
     
+    def process_image_message(self, image_path: str) -> str:
+        """
+        处理图片消息
+        
+        Args:
+            image_path: 图片文件路径
+            
+        Returns:
+            识别结果和回复
+        """
+        if not self.image_recognizer:
+            return "抱歉，图片识别功能当前不可用。"
+        
+        try:
+            # 调用图片识别
+            recognition_result = self.image_recognizer.recognize_product(image_path)
+            
+            if "error" in recognition_result:
+                return f"图片识别失败：{recognition_result['error']}"
+            
+            # 构建回复
+            response = f"""🤖 图片识别结果：
+
+🔍 识别到的商品信息：
+• 商品名称：{recognition_result.get('product_name', '未知')}
+• 商品分类：{recognition_result.get('category', '未知')}
+• 识别置信度：{recognition_result.get('confidence', 0):.2f}%
+• 价格区间：{recognition_result.get('price_range', '待确认')}
+• 相似商品：{recognition_result.get('similar_products', 0)}个
+
+需要了解更多关于此商品的信息吗？我可以为您提供详细的产品介绍、价格咨询或购买建议。"""
+            
+            return response
+            
+        except Exception as e:
+            return f"处理图片时发生错误：{str(e)}"
+    
+    def _build_cot_prompt(self, user_input: str) -> str:
+        """构建思维链提示词"""
+        
+        # 获取上下文信息
+        context_info = self.memory.get_context_for_prompt()
+        
+        if self.use_chain_of_thought:
+            cot_prompt = f"""你是一个专业的电商客服专家，名叫{self.agent_name}。
+请按照以下思维链步骤来分析和回答用户问题：
+
+## 思维链分析步骤：
+
+**第一步：问题理解**
+仔细分析用户的问题：{user_input}
+识别关键信息和用户真正的需求
+
+**第二步：信息检索**
+根据上下文和专业知识库，找出相关的业务规则：
+{context_info}
+
+**第三步：方案制定**
+基于检索到的信息，制定解决问题的具体方案
+
+**第四步：答案生成**
+给出专业、友好的最终回复
+
+请严格按照以上四个步骤进行思考和回答，确保逻辑清晰、答案准确。
+
+用户问题：{user_input}
+
+请开始您的分析："""
+        else:
+            # 传统的直接回答方式
+            cot_prompt = self._build_qwen_prompt(user_input)
+        
+        return cot_prompt
+    
     def _build_qwen_prompt(self, user_input: str) -> str:
-        """构建增强版千问提示词"""
+        """构建传统提示词（保持原有功能）"""
         
         # 获取上下文信息
         context_info = self.memory.get_context_for_prompt()
@@ -166,29 +266,51 @@ class QwenEcommerceAgent:
         
         return system_role
     
-    def process_message(self, user_input: str) -> str:
+    def enable_chain_of_thought(self, depth: int = 3):
+        """启用思维链功能"""
+        self.use_chain_of_thought = True
+        self.thinking_depth = depth
+        print(f"✅ 思维链功能已启用，思考深度：{depth}级")
+    
+    def disable_chain_of_thought(self):
+        """禁用思维链功能"""
+        self.use_chain_of_thought = False
+        print("❌ 思维链功能已禁用")
+    
+    def process_message(self, user_input: str, image_path: str = None) -> str:
         """
         处理用户消息（增强版）
         
         Args:
-            user_input: 用户输入
+            user_input: 用户输入文本
+            image_path: 可选的图片路径
             
         Returns:
-            AI客服回复
+            AI回复
         """
         try:
+            # 如果有图片，优先处理图片
+            if image_path and self.image_recognizer:
+                image_response = self.process_image_message(image_path)
+                print(f"🖼️  图片识别结果: {image_response}")
+                return image_response
+            
             # 分析消息类型和提取实体
             message_type = self._classify_message_type(user_input)
             key_entities = self._extract_key_entities(user_input)
             
-            # 构建提示词
-            prompt = self._build_qwen_prompt(user_input)
+            # 根据配置选择提示词构建方式
+            if self.use_chain_of_thought:
+                prompt = self._build_cot_prompt(user_input)
+                print("🧠 使用思维链模式进行分析...")
+            else:
+                prompt = self._build_qwen_prompt(user_input)
             
             # 调用通义千问API
             response = self.dashscope.Generation.call(
                 model='qwen-plus',
                 prompt=prompt,
-                max_tokens=800,
+                max_tokens=1000,  # 增加token限制以容纳思维链
                 temperature=0.7,
                 top_p=0.8
             )
@@ -207,9 +329,20 @@ class QwenEcommerceAgent:
                 key_entities=key_entities
             )
             
+            # 自动保存机制
+            if self.auto_save_enabled:
+                self.dialog_count += 1
+                if self.dialog_count % self.save_interval == 0:
+                    self.memory.auto_save_to_file()
+                    print(f"💾 已自动保存第{self.dialog_count}次对话记录")
+            
             # 日志输出
             print(f"📥 用户: {user_input}")
-            print(f"📤 {self.agent_name}: {ai_reply}")
+            if self.use_chain_of_thought:
+                print("🧾 AI思维链分析过程:")
+                print(ai_reply)
+            else:
+                print(f"📤 {self.agent_name}: {ai_reply}")
             print(f"🏷️  消息类型: {message_type.value}")
             if key_entities:
                 print(f"🔑 关键实体: {', '.join(key_entities)}")
@@ -229,11 +362,54 @@ class QwenEcommerceAgent:
             "agent_name": self.agent_name,
             "model": "qwen-plus",
             "memory_stats": memory_stats,
-            "knowledge_areas": list(self.knowledge_base.keys())
+            "knowledge_areas": list(self.knowledge_base.keys()),
+            "auto_save_enabled": self.auto_save_enabled,
+            "save_interval": self.save_interval,
+            "dialog_count": self.dialog_count,
+            "image_recognition_enabled": self.image_recognizer is not None
         }
     
     def clear_session(self):
         """清空当前会话"""
         self.memory.clear_memory()
         print(f"🗑️ {self.agent_name} 会话已清空")
-
+    
+    def enable_auto_save(self, interval: int = 3):
+        """启用自动保存功能"""
+        self.auto_save_enabled = True
+        self.save_interval = interval
+        print(f"✅ 自动保存已启用，每{interval}次对话保存一次")
+    
+    def disable_auto_save(self):
+        """禁用自动保存功能"""
+        self.auto_save_enabled = False
+        print("❌ 自动保存已禁用")
+    
+    def load_previous_memory(self, filepath: str = None):
+        """加载之前的对话记忆"""
+        try:
+            if filepath is None:
+                filepath = os.path.join('backup', 'memory_backup.json')
+            
+            if os.path.exists(filepath):
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    memory_data = json.load(f)
+                
+                # 恢复对话历史
+                for turn_data in memory_data.get('dialog_history', []):
+                    self.memory.add_dialog_turn(
+                        user_input=turn_data['user_input'],
+                        ai_response=turn_data['ai_response'],
+                        message_type=MessageType(turn_data['message_type']),
+                        key_entities=turn_data['key_entities']
+                    )
+                
+                print(f"✅ 已加载之前的对话记忆，共{len(self.memory.dialog_history)}条记录")
+                return True
+            else:
+                print("ℹ️ 未找到之前的对话记录文件")
+                return False
+                
+        except Exception as e:
+            print(f"❌ 加载对话记忆失败: {e}")
+            return False
