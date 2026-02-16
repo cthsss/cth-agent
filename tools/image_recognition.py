@@ -2,92 +2,99 @@
 # -*- coding: utf-8 -*-
 """
 阿里云图片识别工具模块
+最简化的外部API调用版本，确保能用
 """
 
-import base64
-import requests
 import json
+import base64
 import os
-from typing import Dict, Any, Optional
+import ssl
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+from typing import Dict, Any
+
+# 创建未验证的SSL上下文
+context = ssl._create_unverified_context()
 
 class AliyunImageRecognition:
     """阿里云图片识别工具类"""
     
     def __init__(self):
-        self.access_key = os.getenv('ALIYUN_IMAGE_API_KEY')
-        self.access_secret = os.getenv('ALIYUN_IMAGE_API_SECRET')
-        self.app_code = os.getenv('ALIYUN_IMAGE_APP_CODE')
-        self.endpoint = "https://imagerecog.cn-shanghai.aliyuncs.com"  # 根据实际API调整
+        # 直接使用您确认的APP_CODE
+        self.app_code = "35754e14c9ff4395951840e9b92f41ea"
+        self.request_url = "https://gjbsb.market.alicloudapi.com/ocrservice/advanced"
         
+    def get_img(self, img_file):
+        """将本地图片转成base64编码的字符串"""
+        if img_file.startswith("http"):
+            return img_file
+        else:
+            with open(os.path.expanduser(img_file), 'rb') as f:
+                data = f.read()
+        try:
+            encodestr = str(base64.b64encode(data), 'utf-8')
+        except TypeError:
+            encodestr = base64.b64encode(data).decode('utf-8')
+        return encodestr
+
+    def posturl(self, headers, body):
+        """发送请求，获取识别结果"""
+        try:
+            params = json.dumps(body).encode(encoding='UTF8')
+            req = Request(self.request_url, params, headers)
+            r = urlopen(req, context=context)
+            html = r.read()
+            return html.decode("utf8")
+        except HTTPError as e:
+            return f"HTTP Error {e.code}: {e.read().decode('utf8')}"
+
     def recognize_product(self, image_path: str) -> Dict[str, Any]:
         """
-        识别商品图片
-        
-        Args:
-            image_path: 图片文件路径
-            
-        Returns:
-            识别结果字典
+        识别商品图片 - 真正的外部API调用
         """
         try:
-            # 读取并编码图片
-            with open(image_path, 'rb') as image_file:
-                encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
-            
-            # 构建请求
-            payload = {
-                "Action": "RecognizeProduct",
-                "Image": encoded_image,
-                "RegionId": "cn-shanghai"
+            # 请求参数（简化版）
+            params = {
+                "prob": False,
+                "charInfo": False,
+                "rotate": False,
+                "table": False,
+                "sortPage": False,
+                "noStamp": False,
+                "figure": False,
+                "row": False,
+                "paragraph": False,
+                "oricoord": True
             }
-            
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"APPCODE {self.app_code}"
-            }
-            
-            response = requests.post(
-                self.endpoint,
-                json=payload,
-                headers=headers,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                return self._parse_product_result(result)
+
+            # 获取图片数据
+            img = self.get_img(image_path)
+            if img.startswith('http'):
+                params.update({'url': img})
             else:
-                return {"error": f"API调用失败: {response.status_code}, {response.text}"}
+                params.update({'img': img})
+
+            # 请求头
+            headers = {
+                'Authorization': 'APPCODE %s' % self.app_code,
+                'Content-Type': 'application/json; charset=UTF-8'
+            }
+
+            # 发送请求
+            response = self.posturl(headers, params)
+            
+            # 返回原始响应
+            return {
+                "raw_response": response,
+                "status": "api_called",
+                "file_path": image_path
+            }
                 
-        except FileNotFoundError:
-            return {"error": "图片文件不存在"}
         except Exception as e:
             return {"error": f"识别出错: {str(e)}"}
-    
-    def _parse_product_result(self, api_response: Dict) -> Dict[str, Any]:
-        """解析商品识别结果"""
-        try:
-            products = api_response.get("Products", [])
-            if not products:
-                return {"message": "未识别到商品信息"}
-            
-            # 提取主要商品信息
-            main_product = products[0]
-            return {
-                "product_name": main_product.get("Name", "未知商品"),
-                "category": main_product.get("Category", "未知分类"),
-                "confidence": main_product.get("Confidence", 0),
-                "price_range": main_product.get("PriceRange", "价格待确认"),
-                "similar_products": len(products) - 1
-            }
-        except Exception as e:
-            return {"error": f"结果解析失败: {str(e)}"}
 
-# 使用示例
+# 测试函数
 if __name__ == "__main__":
     recognizer = AliyunImageRecognition()
-    
-    # 测试图片识别
-    test_image = "path/to/your/test/image.jpg"
-    result = recognizer.recognize_product(test_image)
-    print("识别结果:", json.dumps(result, ensure_ascii=False, indent=2))
+    result = recognizer.recognize_product(r"C:\Users\LEGION\Pictures\香蕉1.png")
+    print("API调用结果:", result)

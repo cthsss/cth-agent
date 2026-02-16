@@ -4,6 +4,7 @@
 电商客服智能Agent - 使用独立向量数据库模块
 支持通义千问和OpenAI双模型
 纯命令行交互模式
+集成MCP工具管理器
 """
 
 import os
@@ -15,8 +16,10 @@ from langchain_core.runnables import RunnablePassthrough
 
 # 导入独立的向量数据库模块
 from vector_db import vector_db
-# 导入图片识别工具
-from tools.image_recognition import AliyunImageRecognition
+# 导入MCP工具管理器和工具（所有API调用都通过MCP管理器）
+from tools.mcp_base import mcp_manager
+from tools.mcp_ocr_tool import AliyunOCRMCPTool
+from tools.mcp_logistics_tool import LogisticsMCPTool
 
 # 加载环境变量
 load_dotenv()
@@ -89,29 +92,57 @@ def create_qa_chain(provider: str):
     print("✅ 问答系统构建完成！")
     return qa_chain
 
-def handle_image_input(image_path: str, image_recognizer: AliyunImageRecognition):
-    """处理图片输入"""
-    print(f"📸 正在识别图片: {image_path}")
-    
-    # 检查文件是否存在
-    if not os.path.exists(image_path):
-        print(f"❌ 图片文件不存在: {image_path}")
+# 已移除handle_image_input函数，所有图片识别都通过MCP工具管理器处理
+
+def handle_mcp_tool_command(command: str):
+    """处理MCP工具命令"""
+    # 解析命令格式: tool:工具名:参数
+    parts = command.split(':', 2)
+    if len(parts) < 2:
+        print("❌ MCP工具命令格式错误")
+        print("💡 正确格式: tool:工具名:参数")
+        print("💡 可用工具: aliyun_ocr, logistics_tracker")
         return None
     
-    # 调用图片识别API
-    result = image_recognizer.recognize_product(image_path)
+    tool_name = parts[1].strip()
+    tool_params = parts[2].strip() if len(parts) > 2 else ""
     
-    if "error" in result:
-        print(f"❌ 图片识别失败: {result['error']}")
+    # 检查工具是否可用
+    if tool_name not in mcp_manager.get_available_tools():
+        print(f"❌ 未找到工具: {tool_name}")
+        print(f"💡 可用工具: {', '.join(mcp_manager.get_available_tools())}")
         return None
     
-    # 显示识别结果
-    print("✅ 图片识别完成！")
-    print("🔍 识别结果:")
-    for key, value in result.items():
-        print(f"   {key}: {value}")
+    # 启用工具（如果还未启用）
+    if tool_name not in mcp_manager.get_enabled_tools():
+        if not mcp_manager.enable_tool(tool_name):
+            print(f"❌ 工具 {tool_name} 启用失败")
+            return None
     
-    return result
+    # 执行工具
+    print(f"🔧 正在执行工具: {tool_name}")
+    try:
+        if tool_name == "aliyun_ocr":
+            result = mcp_manager.execute_tool(tool_name, image_path=tool_params)
+        elif tool_name == "logistics_tracker":
+            result = mcp_manager.execute_tool(tool_name, tracking_number=tool_params)
+        else:
+            result = mcp_manager.execute_tool(tool_name, param=tool_params)
+        
+        if result and result.get("success"):
+            print("✅ 工具执行成功:")
+            for key, value in result.items():
+                if key != "success":
+                    print(f"   {key}: {value}")
+            return result
+        else:
+            error_msg = result.get("error", "未知错误") if result else "工具返回空结果"
+            print(f"❌ 工具执行失败: {error_msg}")
+            return None
+            
+    except Exception as e:
+        print(f"❌ 工具执行出错: {e}")
+        return None
 
 def initialize_system():
     """初始化系统"""
@@ -138,15 +169,39 @@ def initialize_system():
         stats = vector_db.get_stats()
         print(f"📊 向量数据库状态: {stats}")
         
-        # 初始化图片识别工具
-        image_recognizer = AliyunImageRecognition()
-        print("📸 图片识别工具已就绪")
+        # 初始化MCP工具管理器
+        print("🔧 正在初始化MCP工具管理器...")
+        
+        # 注册所有工具
+        ocr_tool = AliyunOCRMCPTool()
+        logistics_tool = LogisticsMCPTool()
+        
+        mcp_manager.register_tool(ocr_tool)
+        mcp_manager.register_tool(logistics_tool)
+        
+        # 尝试启用工具
+        ocr_enabled = mcp_manager.enable_tool("aliyun_ocr")
+        logistics_enabled = mcp_manager.enable_tool("logistics_tracker")
+        
+        if ocr_enabled:
+            print("✅ MCP OCR工具已启用")
+        else:
+            print("⚠️  MCP OCR工具启用失败")
+            
+        if logistics_enabled:
+            print("✅ MCP物流工具已启用")
+        else:
+            print("⚠️  MCP物流工具启用失败")
         
         # 创建问答链
         qa_chain = create_qa_chain(provider)
         
         print("\n✅ 客服系统启动成功！")
-        return qa_chain, image_recognizer
+        print("💡 系统已完全基于MCP架构运行")
+        print("💡 支持的MCP工具命令:")
+        print("   - tool:aliyun_ocr:图片路径")
+        print("   - tool:logistics_tracker:快递单号")
+        return qa_chain, mcp_manager
         
     except ImportError as e:
         print(f"❌ 导入模块失败: {e}")
@@ -160,14 +215,21 @@ def initialize_system():
 def main():
     """主函数 - 纯命令行模式"""
     # 初始化系统
-    qa_chain, image_recognizer = initialize_system()
+    init_result = initialize_system()
     
-    if not qa_chain or not image_recognizer:
+    if not init_result or len(init_result) < 2:
+        return
+    
+    qa_chain, mcp_manager_instance = init_result
+    
+    if not qa_chain:
         return
     
     print("\n💬 开始对话（输入 'quit' 退出）:")
-    print("💡 支持文本对话和图片识别")
-    print("💡 图片识别格式: image:图片路径")
+    print("💡 所有功能均已通过MCP工具管理器提供")
+    print("💡 图片识别: tool:aliyun_ocr:图片路径")
+    print("💡 物流查询: tool:logistics_tracker:单号")
+    print("💡 传统命令也支持: image:图片路径")
     print("-" * 50)
     
     # 交互循环
@@ -182,18 +244,26 @@ def main():
             if not user_input:
                 continue
             
-            # 检查是否为图片识别请求
+            # 统一通过MCP工具处理所有命令
+            if user_input.startswith("tool:"):
+                handle_mcp_tool_command(user_input)
+                continue
+            
+            # 传统的图片识别命令也转为MCP调用
             image_pattern = r'^image:(.+)$'
             image_match = re.match(image_pattern, user_input.strip())
             
             if image_match:
-                # 处理图片识别
                 image_path = image_match.group(1).strip()
-                recognition_result = handle_image_input(image_path, image_recognizer)
+                print("🔄 正在通过MCP工具处理图片识别...")
+                # 转换为MCP命令格式
+                mcp_command = f"tool:aliyun_ocr:{image_path}"
+                result = handle_mcp_tool_command(mcp_command)
                 
-                if recognition_result:
+                if result and result.get("success"):
                     # 将识别结果整合到对话中
-                    product_info = f"用户上传了一张商品图片，识别结果：{recognition_result}"
+                    recognized_text = result.get('recognized_text', '识别完成')
+                    product_info = f"用户上传了一张商品图片，识别结果：{recognized_text}"
                     print("🔄 正在基于图片信息为您提供相关服务...")
                     response = qa_chain.invoke(product_info)
                     print(f"🤖 客服: {response}")
